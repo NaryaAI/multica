@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -1006,6 +1007,23 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 	// the PR list. We don't pass a single pull_request payload here
 	// because a suite can touch several and the listener already
 	// invalidates by issue.
+	for id := range affectedIssues {
+		issueID, err := util.ParseUUID(id)
+		if err != nil {
+			continue
+		}
+		if !h.issueLinkedPRChecksPassed(ctx, issueID) {
+			continue
+		}
+		issue, err := h.Queries.GetIssue(ctx, issueID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("github: load issue for gate dispatch failed", "issue_id", id, "error", err)
+			}
+			continue
+		}
+		h.reconcileGateDispatch(ctx, issue)
+	}
 	for ws := range affectedWorkspaces {
 		linked := make([]string, 0, len(affectedIssues))
 		for id := range affectedIssues {
@@ -1015,6 +1033,20 @@ func (h *Handler) handleCheckSuiteEvent(ctx context.Context, body []byte) {
 			"linked_issue_ids": linked,
 		})
 	}
+}
+
+func (h *Handler) issueLinkedPRChecksPassed(ctx context.Context, issueID pgtype.UUID) bool {
+	rows, err := h.Queries.ListPullRequestsByIssue(ctx, issueID)
+	if err != nil || len(rows) == 0 {
+		return false
+	}
+	for _, row := range rows {
+		conclusion := aggregateChecksConclusion(row.ChecksFailed, row.ChecksPassed, row.ChecksPending, row.ChecksTotal)
+		if conclusion == nil || *conclusion != "passed" {
+			return false
+		}
+	}
+	return true
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's

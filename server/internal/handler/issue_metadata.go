@@ -190,6 +190,10 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 
 	workspaceID := uuidToString(updated.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	h.reconcileGateDispatch(r.Context(), updated)
+	if refreshed, err := h.Queries.GetIssue(r.Context(), updated.ID); err == nil {
+		updated = refreshed
+	}
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id": uuidToString(updated.ID),
