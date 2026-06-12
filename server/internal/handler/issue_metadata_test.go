@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -245,6 +246,116 @@ func TestNewIssueDefaultsToEmptyMetadata(t *testing.T) {
 	}
 }
 
+func TestIssueMetadataWaitingReviewDispatchesReviewer(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	reviewerID := createNamedHandlerTestAgent(t, "Reviewer")
+	issueID := createMetadataTestIssue(t, "Waiting for review gate")
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_review", json.RawMessage(`{"value":"pending@abc1234"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_review")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_review"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var taskCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+	`, issueID, reviewerID).Scan(&taskCount); err != nil {
+		t.Fatalf("count reviewer tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected one reviewer task after waiting_review metadata, got %d", taskCount)
+	}
+
+	var metadataRaw []byte
+	if err := testPool.QueryRow(ctx, `SELECT metadata FROM issue WHERE id = $1`, issueID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("load issue metadata: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+		t.Fatalf("decode issue metadata: %v", err)
+	}
+	if got := metadata["gate_dispatch_status"]; got != "waiting_for_agent_run" {
+		t.Fatalf("gate_dispatch_status = %v, want waiting_for_agent_run", got)
+	}
+	if got := metadata["gate_dispatch_head"]; got != "abc1234" {
+		t.Fatalf("gate_dispatch_head = %v, want abc1234", got)
+	}
+}
+
+func TestIssueMetadataPipelineBeforeGateHeadWaitsThenDispatchesOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	reviewerID := createNamedHandlerTestAgent(t, "Reviewer")
+	issueID := createMetadataTestIssue(t, "Pipeline before review head")
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_review"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countGateTasksForAgent(t, ctx, issueID, reviewerID); got != 0 {
+		t.Fatalf("pipeline_status before gate head should not dispatch; got %d tasks", got)
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_review", json.RawMessage(`{"value":"pending@def5678"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_review")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countGateTasksForAgent(t, ctx, issueID, reviewerID); got != 1 {
+		t.Fatalf("expected exactly one reviewer task after gate head arrives, got %d", got)
+	}
+}
+
+func TestIssueMetadataWaitingTestDispatchesMacOSQA(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	qaID := createNamedHandlerTestAgent(t, "QA (macOS)")
+	issueID := createMetadataTestIssue(t, "Waiting for test gate")
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_test", json.RawMessage(`{"value":"pending@abc1234"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_test")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_test: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_test"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countGateTasksForAgent(t, ctx, issueID, qaID); got != 1 {
+		t.Fatalf("expected one QA (macOS) task after waiting_test metadata, got %d", got)
+	}
+}
+
 func createMetadataTestIssue(t *testing.T, title string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -262,4 +373,41 @@ func createMetadataTestIssue(t *testing.T, title string) string {
 		t.Fatalf("decode issue: %v", err)
 	}
 	return issue.ID
+}
+
+func countGateTasksForAgent(t *testing.T, ctx context.Context, issueID, agentID string) int {
+	t.Helper()
+
+	var taskCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+	`, issueID, agentID).Scan(&taskCount); err != nil {
+		t.Fatalf("count gate tasks: %v", err)
+	}
+	return taskCount
+}
+
+func createNamedHandlerTestAgent(t *testing.T, name string) string {
+	t.Helper()
+
+	var agentID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config,
+			runtime_id, visibility, max_concurrent_tasks, owner_id,
+			instructions, custom_env, custom_args
+		)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'workspace', 1, $4, '', '{}'::jsonb, '[]'::jsonb)
+		RETURNING id
+	`, testWorkspaceID, name, handlerTestRuntimeID(t), testUserID).Scan(&agentID); err != nil {
+		t.Fatalf("create named handler test agent: %v", err)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
+	})
+
+	return agentID
 }

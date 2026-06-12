@@ -1464,6 +1464,43 @@ func TestWebhook_CheckSuite_AggregatesAcrossApps(t *testing.T) {
 	}
 }
 
+func TestWebhook_CheckSuite_GreenDispatchesWaitingReview(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "ci-gate-dispatch-secret"
+	reviewerID := createNamedHandlerTestAgent(t, "Reviewer")
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+	head := "8db0bd124"
+
+	if _, err := testPool.Exec(ctx, `
+		UPDATE issue
+		SET metadata = jsonb_build_object(
+			'pipeline_status', 'waiting_review',
+			'gate_review', $2::text,
+			'waiting_on', 'Reviewer re-review after green CI'
+		)
+		WHERE id = $1
+	`, created.ID, "pending@"+head); err != nil {
+		t.Fatalf("seed waiting_review metadata: %v", err)
+	}
+
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-gate", 33, "opened", head, "")
+	fireCheckSuiteWebhook(t, secret, installationID, "ci-repo-gate", []int32{33}, 3001, 9001, head, "success", "2026-05-01T00:00:00Z")
+
+	var taskCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+	`, created.ID, reviewerID).Scan(&taskCount); err != nil {
+		t.Fatalf("count reviewer tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected one reviewer task after green check_suite, got %d", taskCount)
+	}
+}
+
 // TestWebhook_CheckSuite_OldHeadIgnored asserts that a late-arriving
 // check_suite for a stale head SHA doesn't contaminate the current head's
 // pending view. Without the head_sha filter in the aggregation query, the
@@ -2050,7 +2087,6 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 		}
 	}
 }
-
 
 // generateTestRSAKeyPEM mints an RSA-2048 key, returns its PKCS#1 PEM
 // encoding (the format GitHub hands operators when they create the App)
