@@ -356,6 +356,121 @@ func TestIssueMetadataWaitingTestDispatchesMacOSQA(t *testing.T) {
 	}
 }
 
+func TestIssueMetadataWaitingPRRDispatchesSRE(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	sreID := createNamedHandlerTestAgent(t, "SRE")
+	issueID := createMetadataTestIssue(t, "Waiting for PRR gate")
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_prr", json.RawMessage(`{"value":"pending@abc1234"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_prr")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_prr: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_prr"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := countGateTasksForAgent(t, ctx, issueID, sreID); got != 1 {
+		t.Fatalf("expected one SRE task after waiting_prr metadata, got %d", got)
+	}
+}
+
+func TestIssueMetadataGateDispatchMarksArchivedAgentFailure(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	reviewerID := createNamedHandlerTestAgent(t, "Reviewer")
+	issueID := createMetadataTestIssue(t, "Archived reviewer dispatch failure")
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET archived_at = now() WHERE id = $1`, reviewerID); err != nil {
+		t.Fatalf("archive reviewer: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_review", json.RawMessage(`{"value":"pending@abc1234"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_review")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_review"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	metadata := loadIssueMetadata(t, ctx, issueID)
+	if got := metadata["pipeline_status"]; got != "gate_dispatch_failed" {
+		t.Fatalf("pipeline_status = %v, want gate_dispatch_failed", got)
+	}
+	if got := metadata["gate_dispatch_status"]; got != "dispatch_failed" {
+		t.Fatalf("gate_dispatch_status = %v, want dispatch_failed", got)
+	}
+	waitingOn, _ := metadata["waiting_on"].(string)
+	if !strings.Contains(waitingOn, "agent is archived") {
+		t.Fatalf("waiting_on = %q, want concrete archived-agent reason", waitingOn)
+	}
+}
+
+func TestIssueMetadataGateDispatchReportsActiveExistingRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	reviewerID := createNamedHandlerTestAgent(t, "Reviewer")
+	issueID := createMetadataTestIssue(t, "Existing reviewer run")
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, $2, $3, 'running', 0)
+		RETURNING id
+	`, reviewerID, handlerTestRuntimeID(t), issueID).Scan(&taskID); err != nil {
+		t.Fatalf("seed running reviewer task: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/gate_review", json.RawMessage(`{"value":"pending@abc1234"}`))
+	req = withURLParams(req, "id", issueID, "key", "gate_review")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set gate_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status", json.RawMessage(`{"value":"waiting_review"}`))
+	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
+	testHandler.SetIssueMetadataKey(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Set pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if got := countGateTasksForAgent(t, ctx, issueID, reviewerID); got != 1 {
+		t.Fatalf("existing active reviewer run should be reused, got %d tasks", got)
+	}
+	metadata := loadIssueMetadata(t, ctx, issueID)
+	if got := metadata["gate_dispatch_status"]; got != "agent_run_active" {
+		t.Fatalf("gate_dispatch_status = %v, want agent_run_active", got)
+	}
+	if got := metadata["gate_dispatch_head"]; got != "abc1234" {
+		t.Fatalf("gate_dispatch_head = %v, want abc1234", got)
+	}
+}
+
 func createMetadataTestIssue(t *testing.T, title string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -386,6 +501,20 @@ func countGateTasksForAgent(t *testing.T, ctx context.Context, issueID, agentID 
 		t.Fatalf("count gate tasks: %v", err)
 	}
 	return taskCount
+}
+
+func loadIssueMetadata(t *testing.T, ctx context.Context, issueID string) map[string]any {
+	t.Helper()
+
+	var metadataRaw []byte
+	if err := testPool.QueryRow(ctx, `SELECT metadata FROM issue WHERE id = $1`, issueID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("load issue metadata: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+		t.Fatalf("decode issue metadata: %v", err)
+	}
+	return metadata
 }
 
 func createNamedHandlerTestAgent(t *testing.T, name string) string {
