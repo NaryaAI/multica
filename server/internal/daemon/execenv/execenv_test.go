@@ -2780,6 +2780,14 @@ func TestPrepareCodexSeedsUserSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(userSkills, "translate", "SKILL.md"), []byte("translate"), 0o644); err != nil {
 		t.Fatalf("seed second user SKILL.md: %v", err)
 	}
+	for _, name := range []string{"slack", "slack-outgoing-message"} {
+		if err := os.MkdirAll(filepath.Join(userSkills, name), 0o755); err != nil {
+			t.Fatalf("seed denied Slack connector skill %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(userSkills, name, "SKILL.md"), []byte(name), 0o644); err != nil {
+			t.Fatalf("seed denied Slack connector SKILL.md %s: %v", name, err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(userSkills, ".DS_Store"), []byte("noise"), 0o644); err != nil {
 		t.Fatalf("seed ignored dotfile: %v", err)
 	}
@@ -2814,6 +2822,11 @@ func TestPrepareCodexSeedsUserSkills(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", ".DS_Store")); !os.IsNotExist(err) {
 		t.Errorf("ignored dotfile leaked into codex-home/skills: err=%v", err)
+	}
+	for _, name := range []string{"slack", "slack-outgoing-message"} {
+		if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", name)); !os.IsNotExist(err) {
+			t.Errorf("denied Slack connector skill %s leaked into codex-home/skills: err=%v", name, err)
+		}
 	}
 }
 

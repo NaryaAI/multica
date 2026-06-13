@@ -53,6 +53,10 @@ func seedUserCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv,
 		if name == "" || strings.HasPrefix(name, ".") {
 			continue
 		}
+		if isDeniedUserCodexSkill(name) {
+			logger.Warn("execenv: codex user-skill denied for autonomous task", "name", name)
+			continue
+		}
 		if _, claimed := reserved[sanitizeSkillName(name)]; claimed {
 			logger.Info("execenv: codex user-skill yields to workspace skill", "name", name)
 			continue
@@ -81,6 +85,15 @@ func seedUserCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv,
 		}
 	}
 	return nil
+}
+
+func isDeniedUserCodexSkill(name string) bool {
+	switch sanitizeSkillName(name) {
+	case "slack", "slack-outgoing-message", "slack-cli":
+		return true
+	default:
+		return false
+	}
 }
 
 // copyDirTree walks src recursively and copies every regular file under it

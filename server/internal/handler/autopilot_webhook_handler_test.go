@@ -111,7 +111,7 @@ func TestWebhookHandler_FiltersUndeclaredEvent(t *testing.T) {
 	})
 
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{
-		"action": "in_progress",
+		"action":       "in_progress",
 		"workflow_run": map[string]any{"id": 123},
 	}, map[string]string{"X-GitHub-Event": "workflow_run"})
 	if w.Code != http.StatusOK {
@@ -149,7 +149,7 @@ func TestWebhookHandler_AllowsDeclaredEvent(t *testing.T) {
 	})
 
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{
-		"action": "completed",
+		"action":       "completed",
 		"workflow_run": map[string]any{"id": 123},
 	}, map[string]string{"X-GitHub-Event": "workflow_run"})
 	if w.Code != http.StatusOK {
@@ -170,7 +170,7 @@ func TestWebhookHandler_EmptyFiltersAllowsAll(t *testing.T) {
 	trig := createWebhookTriggerViaHandler(t, apID)
 
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{
-		"action": "in_progress",
+		"action":       "in_progress",
 		"workflow_run": map[string]any{"id": 123},
 	}, map[string]string{"X-GitHub-Event": "workflow_run"})
 	if w.Code != http.StatusOK {
@@ -469,6 +469,45 @@ func TestCreateWebhookTrigger_PublicURLAffectsResponse(t *testing.T) {
 	}
 	if !strings.HasPrefix(*respURL.WebhookURL, "https://app.example/api/webhooks/autopilots/") {
 		t.Fatalf("webhook_url shape: %q", *respURL.WebhookURL)
+	}
+}
+
+func TestGetAutopilot_RedactsWebhookBearerFields(t *testing.T) {
+	agentID := createWebhookTestAgent(t, "WebhookGetRedacted Agent")
+	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
+
+	prev := testHandler.cfg.PublicURL
+	t.Cleanup(func() { testHandler.cfg.PublicURL = prev })
+	testHandler.cfg.PublicURL = "https://app.example"
+
+	created := createWebhookTriggerViaHandler(t, apID)
+	if created.WebhookToken == nil || created.WebhookPath == nil || created.WebhookURL == nil {
+		t.Fatalf("create response must still include the newly minted URL so an operator can copy it once: %+v", created)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/autopilots/"+apID, nil)
+	req = withURLParam(req, "id", apID)
+	testHandler.GetAutopilot(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAutopilot: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Triggers []AutopilotTriggerResponse `json:"triggers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Triggers) != 1 {
+		t.Fatalf("expected one trigger, got %d body=%s", len(body.Triggers), w.Body.String())
+	}
+	got := body.Triggers[0]
+	if got.WebhookToken != nil || got.WebhookPath != nil || got.WebhookURL != nil {
+		t.Fatalf("get response must not expose bearer webhook fields: token=%v path=%v url=%v", got.WebhookToken, got.WebhookPath, got.WebhookURL)
+	}
+	if got.Kind != "webhook" || !got.Enabled {
+		t.Fatalf("non-sensitive trigger state should remain visible: %+v", got)
 	}
 }
 

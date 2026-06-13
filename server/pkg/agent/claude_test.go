@@ -472,6 +472,46 @@ func TestMergeEnvFiltersClaudeCodeVars(t *testing.T) {
 	}
 }
 
+func TestMergeEnvFiltersInheritedSlackBridgeIdentityVars(t *testing.T) {
+	t.Parallel()
+
+	env := mergeEnv([]string{
+		"PATH=/usr/bin",
+		"SLACK_BRIDGE_BOT_TOKEN=xoxb-inherited",
+		"SLACK_EXPECTED_BOT_USER_ID=UINHERITED",
+		"SLACK_CLI_AGENT_DISPLAY_NAME=Space",
+	}, map[string]string{
+		"SLACK_BRIDGE_BOT_TOKEN":          "xoxb-controlled",
+		"SLACK_EXPECTED_BOT_USER_ID":      "UCONTROLLED",
+		"SLACK_CLI_AGENT_DISPLAY_NAME":    "Hermes",
+		"UNRELATED_SLACK_TEST_KEEP_VALUE": "ok",
+	})
+
+	for _, entry := range env {
+		switch entry {
+		case "SLACK_BRIDGE_BOT_TOKEN=xoxb-inherited",
+			"SLACK_EXPECTED_BOT_USER_ID=UINHERITED",
+			"SLACK_CLI_AGENT_DISPLAY_NAME=Space":
+			t.Fatalf("inherited Slack bridge identity env must be filtered, got %v", env)
+		}
+	}
+
+	found := map[string]bool{}
+	for _, entry := range env {
+		found[entry] = true
+	}
+	for _, want := range []string{
+		"SLACK_BRIDGE_BOT_TOKEN=xoxb-controlled",
+		"SLACK_EXPECTED_BOT_USER_ID=UCONTROLLED",
+		"SLACK_CLI_AGENT_DISPLAY_NAME=Hermes",
+		"UNRELATED_SLACK_TEST_KEEP_VALUE=ok",
+	} {
+		if !found[want] {
+			t.Fatalf("expected %q in merged env, got %v", want, env)
+		}
+	}
+}
+
 func TestBuildEnvAppendsExtras(t *testing.T) {
 	t.Parallel()
 
