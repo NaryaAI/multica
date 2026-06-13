@@ -80,6 +80,60 @@ func TestTriggerRestart_BrewLinuxCellarDeleted(t *testing.T) {
 	}
 }
 
+func TestIsBlockedEnvKey_BlocksSlackBridgeIdentityEnv(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		"SLACK_BRIDGE_BOT_TOKEN",
+		"MULTICA_BRIDGE_SLACK_BOT_TOKEN",
+		"SLACK_BOT_TOKEN",
+		"SLACK_EXPECTED_BOT_USER_ID",
+		"SLACK_CLI_AGENT_DISPLAY_NAME",
+		"slack_bridge_bot_token",
+	} {
+		if !isBlockedEnvKey(key) {
+			t.Fatalf("%s should be blocked from agent custom_env overrides", key)
+		}
+	}
+}
+
+func TestInjectSlackBridgeEnvRequiresSlackSkillAndPinsDisplayName(t *testing.T) {
+	t.Parallel()
+
+	source := func(key string) string {
+		switch key {
+		case "SLACK_BRIDGE_BOT_TOKEN":
+			return "xoxb-bridge"
+		case "SLACK_EXPECTED_BOT_USER_ID":
+			return "U0BOT"
+		case "SLACK_CLI_AGENT_DISPLAY_NAME":
+			return "Space"
+		default:
+			return ""
+		}
+	}
+
+	withoutSkill := map[string]string{}
+	injectSlackBridgeEnv(withoutSkill, "Hermes", &AgentData{}, source)
+	if len(withoutSkill) != 0 {
+		t.Fatalf("agent without slack-cli skill should not receive Slack bridge env: %#v", withoutSkill)
+	}
+
+	withSkill := map[string]string{}
+	injectSlackBridgeEnv(withSkill, "Hermes", &AgentData{
+		Skills: []SkillData{{Name: "slack-cli"}},
+	}, source)
+	if withSkill["SLACK_BRIDGE_BOT_TOKEN"] != "xoxb-bridge" {
+		t.Fatalf("bridge token not injected from controlled source: %#v", withSkill)
+	}
+	if withSkill["SLACK_EXPECTED_BOT_USER_ID"] != "U0BOT" {
+		t.Fatalf("expected bot id not injected: %#v", withSkill)
+	}
+	if withSkill["SLACK_CLI_AGENT_DISPLAY_NAME"] != "Hermes" {
+		t.Fatalf("display name must be pinned to agent name, not inherited source: %#v", withSkill)
+	}
+}
+
 // When `brew --prefix` is unavailable but the executable path is under a
 // known Cellar root, triggerRestart must recover the prefix from the
 // known-prefix list and target <prefix>/bin/multica.

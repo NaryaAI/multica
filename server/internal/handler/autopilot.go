@@ -179,6 +179,14 @@ func (h *Handler) triggerToResponse(t db.AutopilotTrigger) AutopilotTriggerRespo
 	return resp
 }
 
+func (h *Handler) triggerToReadbackResponse(t db.AutopilotTrigger) AutopilotTriggerResponse {
+	resp := h.triggerToResponse(t)
+	resp.WebhookToken = nil
+	resp.WebhookPath = nil
+	resp.WebhookURL = nil
+	return resp
+}
+
 // signingSecretHint returns the last 4 characters of the signing secret so a
 // configured-vs-rotated state is visible in the UI without exposing the
 // secret itself. Truncating below 4 chars (which the validator already
@@ -350,7 +358,7 @@ func (h *Handler) GetAutopilot(w http.ResponseWriter, r *http.Request) {
 	}
 	triggerResp := make([]AutopilotTriggerResponse, len(triggers))
 	for i, t := range triggers {
-		triggerResp[i] = h.triggerToResponse(t)
+		triggerResp[i] = h.triggerToReadbackResponse(t)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -761,10 +769,11 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		resp := h.triggerToResponse(trigger)
+		eventResp := h.triggerToReadbackResponse(trigger)
 		userID, _ := requireUserID(w, r)
 		h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{
 			"autopilot_id": uuidToString(ap.ID),
-			"trigger":      resp,
+			"trigger":      eventResp,
 		})
 		writeJSON(w, http.StatusCreated, resp)
 		return
@@ -785,7 +794,7 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	resp := h.triggerToResponse(trigger)
+	resp := h.triggerToReadbackResponse(trigger)
 	userID, _ := requireUserID(w, r)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{
 		"autopilot_id": uuidToString(ap.ID),
@@ -1031,7 +1040,7 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	resp := h.triggerToResponse(trigger)
+	resp := h.triggerToReadbackResponse(trigger)
 	userID, _ := requireUserID(w, r)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{
 		"autopilot_id": uuidToString(ap.ID),
@@ -1142,10 +1151,11 @@ func (h *Handler) RotateAutopilotTriggerWebhookToken(w http.ResponseWriter, r *h
 	}
 
 	resp := h.triggerToResponse(rotated)
+	eventResp := h.triggerToReadbackResponse(rotated)
 	userID, _ := requireUserID(w, r)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{
 		"autopilot_id": uuidToString(ap.ID),
-		"trigger":      resp,
+		"trigger":      eventResp,
 	})
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1206,7 +1216,7 @@ func (h *Handler) SetAutopilotTriggerSigningSecret(w http.ResponseWriter, r *htt
 		return
 	}
 
-	resp := h.triggerToResponse(updated)
+	resp := h.triggerToReadbackResponse(updated)
 	userID, _ := requireUserID(w, r)
 	// Publish the trigger update so the UI can refresh the has_signing_secret
 	// badge in real time. The event payload only carries the response shape,

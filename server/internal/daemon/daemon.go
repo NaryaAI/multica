@@ -2830,6 +2830,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if rootsValue, ok := composeOpenclawIncludeRoots(env.OpenclawIncludeRoot, os.Getenv("OPENCLAW_INCLUDE_ROOTS")); ok {
 		agentEnv["OPENCLAW_INCLUDE_ROOTS"] = rootsValue
 	}
+	injectSlackBridgeEnv(agentEnv, agentName, task.Agent, os.Getenv)
 	// Inject user-configured custom environment variables (e.g. ANTHROPIC_API_KEY,
 	// ANTHROPIC_BASE_URL for router/proxy mode, or CLAUDE_CODE_USE_BEDROCK for
 	// Bedrock). These are set per-agent via the agent settings UI.
@@ -3705,8 +3706,36 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "CODEX_HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "CODEX_HOME", "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS",
+		"SLACK_BRIDGE_BOT_TOKEN", "MULTICA_BRIDGE_SLACK_BOT_TOKEN", "SLACK_BOT_TOKEN",
+		"SLACK_EXPECTED_BOT_USER_ID", "SLACK_CLI_AGENT_DISPLAY_NAME":
 		return true
+	}
+	return false
+}
+
+func injectSlackBridgeEnv(agentEnv map[string]string, agentName string, agentData *AgentData, lookup func(string) string) {
+	if agentData == nil || !agentHasSkill(agentData, "slack-cli") {
+		return
+	}
+	if token := strings.TrimSpace(lookup("SLACK_BRIDGE_BOT_TOKEN")); token != "" {
+		agentEnv["SLACK_BRIDGE_BOT_TOKEN"] = token
+	} else if token := strings.TrimSpace(lookup("MULTICA_BRIDGE_SLACK_BOT_TOKEN")); token != "" {
+		agentEnv["SLACK_BRIDGE_BOT_TOKEN"] = token
+	}
+	if expectedBot := strings.TrimSpace(lookup("SLACK_EXPECTED_BOT_USER_ID")); expectedBot != "" {
+		agentEnv["SLACK_EXPECTED_BOT_USER_ID"] = expectedBot
+	}
+	if agentName != "" {
+		agentEnv["SLACK_CLI_AGENT_DISPLAY_NAME"] = agentName
+	}
+}
+
+func agentHasSkill(agentData *AgentData, skillName string) bool {
+	for _, skill := range agentData.Skills {
+		if skill.Name == skillName {
+			return true
+		}
 	}
 	return false
 }

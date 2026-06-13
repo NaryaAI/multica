@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // ── Token generation ────────────────────────────────────────────────────────
@@ -44,6 +47,30 @@ func TestGenerateWebhookToken_NoUnsafeURLChars(t *testing.T) {
 	}
 	if strings.ContainsAny(token, "+/= ") {
 		t.Fatalf("token has unsafe characters: %q", token)
+	}
+}
+
+func TestTriggerToResponseForReadback_RedactsWebhookBearerFields(t *testing.T) {
+	token := "awt_secret_bearer_token"
+	trigger := db.AutopilotTrigger{
+		Kind:         "webhook",
+		Enabled:      true,
+		WebhookToken: pgtype.Text{String: token, Valid: true},
+		Provider:     "generic",
+	}
+	h := &Handler{}
+
+	created := h.triggerToResponse(trigger)
+	if created.WebhookToken == nil || created.WebhookPath == nil {
+		t.Fatalf("fresh create/rotate responses should still include one-time copyable URL fields: %+v", created)
+	}
+
+	readback := h.triggerToReadbackResponse(trigger)
+	if readback.WebhookToken != nil || readback.WebhookPath != nil || readback.WebhookURL != nil {
+		t.Fatalf("readback must not expose bearer webhook fields: token=%v path=%v url=%v", readback.WebhookToken, readback.WebhookPath, readback.WebhookURL)
+	}
+	if readback.Kind != "webhook" || !readback.Enabled {
+		t.Fatalf("readback should retain non-sensitive trigger state: %+v", readback)
 	}
 }
 
@@ -334,10 +361,10 @@ func TestWebhookEventAllowedByTriggerScope_MultipleFilters(t *testing.T) {
 
 func TestSplitWebhookEvent(t *testing.T) {
 	tests := []struct {
-		input           string
-		wantProvider    string
-		wantName        string
-		wantAction      string
+		input        string
+		wantProvider string
+		wantName     string
+		wantAction   string
 	}{
 		{"github.workflow_run.completed", "github", "workflow_run", "completed"},
 		{"github.push", "github", "push", ""},
